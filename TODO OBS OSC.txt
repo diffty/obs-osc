@@ -1,0 +1,5 @@
+- Boutons (Dés)Activer tous Compresseurs
+- Hide les boutons qui servent pas
+- Hide les scènes __
+- Implémenter parse des groupes
+- Play/Pause Spotify

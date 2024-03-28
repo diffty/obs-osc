@@ -8,29 +8,34 @@ import obspython
 
 from collections import OrderedDict
 
+import config
+from comms import CommsManager
 
 # GLOBALS
 AUDIO_SOURCES = {}
 
+def script_properties():
+    properties = obspython.obs_properties_create()
 
-# CONSTANTS
-IP = "0.0.0.0"
-PORT = 8000
+    local_port_param = obspython.obs_properties_add_text(properties, "Local Port", "Local OSC device port", obspython.OBS_TEXT_DEFAULT)
+    remote_ip_param = obspython.obs_properties_add_text(properties, "Remote IP", "Remote OSC device IP", obspython.OBS_TEXT_DEFAULT)
+    remote_port_param = obspython.obs_properties_add_text(properties, "Remote Port", "Remote OSC device port", obspython.OBS_TEXT_DEFAULT)
 
+    obspython.obs_property_set_visible(remote_ip_param, True)
 
-# Close any eventual existing server
-try:
-    server._loop.stop()
-    server._loop.close()
-    print("Server found, stopped the event loop")
-    client._sock.close()
-    print("Client found, stopped the event loop")
-
-except:
-    print("No server")
+    return properties
 
 
-client = SimpleUDPClient("192.168.1.25", 9000)
+def script_defaults(settings):
+    obspython.obs_data_set_default_int(settings, "local_port", config.LOCAL_PORT)
+    obspython.obs_data_set_default_string(settings, "remote_ip", config.REMOTE_IP)
+    obspython.obs_data_set_default_int(settings, "remote_port", config.REMOTE_PORT)
+
+
+def script_update(settings):
+    config.LOCAL_PORT = obspython.obs_data_get_default_int(settings, "local_port")
+    config.REMOTE_IP = obspython.obs_data_get_default_string(settings, "remote_ip")
+    config.REMOTE_PORT = obspython.obs_data_get_default_int(settings, "remote_port")
 
 
 def get_audio_sources_from_scene(scene, source_dict=None):
@@ -59,7 +64,7 @@ def get_audio_sources_from_scene(scene, source_dict=None):
 def refresh_scenes():
     for i, scene_source in enumerate(obspython.obs_frontend_get_scenes()):
         scene_name = obspython.obs_source_get_name(scene_source)
-        client.send_message(f"/obs/scene/label/num/{i+1}", scene_name)
+        comms_manager.client.send_message(f"/obs/scene/label/num/{i+1}", scene_name)
 
 def refresh_audio_faders():
     global AUDIO_SOURCES
@@ -69,17 +74,21 @@ def refresh_audio_faders():
 
     # Hide all the sliders
     for i in range(10):
-        client.send_message(f"/obs/audio/label/num/{i+1}/visible", 0)
-        client.send_message(f"/obs/audio/fader/num/{i+1}/visible", 0)
+        comms_manager.client.send_message(f"/obs/audio/label/num/{i+1}/visible", False)
+        comms_manager.client.send_message(f"/obs/audio/fader/num/{i+1}/visible", False)
+        comms_manager.client.send_message(f"/obs/audio/monitoring/num/{i+1}/visible", False)
 
     # Show the necessary amount of slider & set their label & volume according to the sources
     for i, src_item in enumerate(AUDIO_SOURCES.items()):
         src_name, src_obj = src_item
         src_volume = obspython.obs_source_get_volume(src_obj)
-        client.send_message(f"/obs/audio/label/num/{i+1}/visible", 1)
-        client.send_message(f"/obs/audio/label/num/{i+1}", src_name)
-        client.send_message(f"/obs/audio/fader/num/{i+1}/visible", 1)
-        client.send_message(f"/obs/audio/fader/num/{i+1}", src_volume ** (1. / 3))
+        src_monitoring = obspython.obs_source_get_monitoring_type(src_obj)
+        comms_manager.client.send_message(f"/obs/audio/label/num/{i+1}/visible", True)
+        comms_manager.client.send_message(f"/obs/audio/label/num/{i+1}", src_name)
+        comms_manager.client.send_message(f"/obs/audio/fader/num/{i+1}/visible", True)
+        comms_manager.client.send_message(f"/obs/audio/fader/num/{i+1}", src_volume ** (1. / 3))
+        comms_manager.client.send_message(f"/obs/audio/monitoring/num/{i+1}/visible", True)
+        comms_manager.client.send_message(f"/obs/audio/monitoring/num/{i+1}", src_monitoring)
 
 
 # +======== OBS CALLBACKS ========+
@@ -115,6 +124,12 @@ def audio_handler(address, *args):
         dB = volume_percent**3
         obspython.obs_source_set_volume(src_obj, dB)
         #break
+    
+    elif control == "monitoring":
+        src_obj = list(AUDIO_SOURCES.values())[int(i_str)-1]
+        monitor_type = args[0]
+        obspython.obs_source_set_monitoring_type(src_obj, monitor_type)
+
 
 def osc_handler(address, *args):
     control = address.split("/")[3]
@@ -144,10 +159,20 @@ def ticker_loop(delta_time):
 def script_tick(delta_time):
     ticker_loop(delta_time)
 
-server = AsyncIOOSCUDPServer((IP, PORT), dispatcher, asyncio.get_event_loop())
-server.serve()
+
+# Init communications manager
+if CommsManager.instance:
+    comms_manager = CommsManager.instance
+else:
+    comms_manager = CommsManager(config.LOCAL_IP,
+                                config.LOCAL_PORT,
+                                config.REMOTE_IP,
+                                config.REMOTE_PORT)
+
+comms_manager.create_client()
+comms_manager.create_server(dispatcher)
 
 
 # Finally refresh scenes
 refresh_scenes()
-
+refresh_audio_faders()
